@@ -60,8 +60,8 @@
                  <button id="undo-btn" class="bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-2 px-6 rounded-lg shadow-lg transition-transform transform hover:scale-105 btn-disabled" disabled>
                     Back
                 </button>
-                <button id="finish-turn-btn" class="bg-cyan-500 hover:bg-cyan-600 text-white font-bold py-2 px-6 rounded-lg shadow-lg transition-transform transform hover:scale-105 btn-disabled" disabled>
-                    Finish Turn
+                <button id="reset-btn" class="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-6 rounded-lg shadow-lg transition-transform transform hover:scale-105">
+                    Reset
                 </button>
             </div>
              <p id="status-message" class="text-center text-yellow-400 h-6"></p>
@@ -71,9 +71,6 @@
         <div class="w-full aspect-square bg-gray-800 rounded-lg shadow-inner">
             <canvas id="game-canvas"></canvas>
         </div>
-         <button id="reset-btn" class="w-full max-w-xs mx-auto bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-6 rounded-lg shadow-lg transition-transform transform hover:scale-105">
-            Reset
-        </button>
     </div>
 
     <script>
@@ -85,7 +82,6 @@
             const cellCountDisplay = document.getElementById('cell-count-display');
             const radiusDisplay = document.getElementById('radius-display');
             const statusMessage = document.getElementById('status-message');
-            const finishTurnBtn = document.getElementById('finish-turn-btn');
             const undoBtn = document.getElementById('undo-btn');
             const resetBtn = document.getElementById('reset-btn');
 
@@ -114,7 +110,7 @@
                     scale = canvas.width / gridSize;
                     pan.x = canvas.width / 2;
                     pan.y = canvas.height / 2;
-                    resetTurnState();
+                    resetTurnState(); 
                 }, 0);
             }
             
@@ -126,6 +122,7 @@
                 processedCellsThisTurn = new Set();
                 turnHistory = [];
                 checkBlockedCells();
+
                 updateUI();
                 if (ctx) {
                     draw();
@@ -143,7 +140,6 @@
                 if (divisionState === 'SELECTING_CELL') {
                     const clickedCell = cells.find(c => c.x === gridPos.x && c.y === gridPos.y);
                     if (clickedCell && cellsToProcessThisTurn.has(clickedCell.id) && !processedCellsThisTurn.has(clickedCell.id)) {
-                        // A cell needs at least one empty neighbor to divide.
                         if (getAvailableNeighbors(clickedCell).length >= 1) {
                             selectedCell = clickedCell;
                             divisionState = 'PLACING_DAUGHTER_1';
@@ -186,11 +182,9 @@
                 const daughter1Pos = daughterPositions[0];
                 const daughter2Pos = daughterPositions[1];
 
-                // Remove parent from list and its spot from occupied set
                 cells = cells.filter(c => c.id !== parentCell.id);
                 occupied.delete(`${parentCell.x},${parentCell.y}`);
                 
-                // Add daughters to list and their spots to occupied set
                 const daughter1 = { x: daughter1Pos.x, y: daughter1Pos.y, id: nextCellId++, generation: time + 1 };
                 cells.push(daughter1);
                 occupied.add(`${daughter1.x},${daughter1.y}`);
@@ -204,6 +198,11 @@
                 selectedCell = null;
                 daughterPositions = [];
                 divisionState = 'SELECTING_CELL';
+
+                // Auto-advance if turn is complete
+                if (processedCellsThisTurn.size === cellsToProcessThisTurn.size) {
+                    finishTurn();
+                }
             }
 
             function undoLastMove() {
@@ -224,15 +223,12 @@
             }
             
             function finishTurn() {
-                const remaining = cellsToProcessThisTurn.size - processedCellsThisTurn.size;
-                if (remaining > 0) return;
                 time++;
                 resetTurnState();
             }
             
             function checkBlockedCells() {
                 cells.filter(c => cellsToProcessThisTurn.has(c.id)).forEach(cell => {
-                    // Blocked if no empty neighbors.
                     if (getAvailableNeighbors(cell).length < 1) {
                         processedCellsThisTurn.add(cell.id);
                     }
@@ -251,7 +247,6 @@
             function getValidPlacementSpots(cell) {
                 if (!cell) return [];
                 const emptyNeighbors = getAvailableNeighbors(cell);
-                // Valid spots are empty neighbors PLUS the parent's own spot.
                 return [...emptyNeighbors, { x: cell.x, y: cell.y }];
             }
 
@@ -260,7 +255,7 @@
             }
 
             function isSamePos(pos1, pos2) {
-                return pos1.x === pos2.x && pos1.y === pos2.y;
+                return pos1 && pos2 && pos1.x === pos2.x && pos1.y === pos2.y;
             }
 
             function screenToGrid(screenX, screenY) {
@@ -283,7 +278,16 @@
                             minDistanceSq = Math.min(minDistanceSq, cell.x**2 + cell.y**2);
                         });
                     }
-                    radiusDisplay.textContent = Math.sqrt(minDistanceSq).toFixed(2);
+                    
+                    const r = Math.sqrt(minDistanceSq);
+                    if (minDistanceSq === 0) {
+                        radiusDisplay.textContent = "0.00";
+                    } else if (Number.isInteger(r)) {
+                        radiusDisplay.textContent = r.toFixed(2);
+                    } else {
+                        radiusDisplay.textContent = `√${minDistanceSq}`;
+                    }
+
                 } else {
                     radiusDisplay.textContent = 'Infinity';
                 }
@@ -292,6 +296,8 @@
                 if (divisionState === 'SELECTING_CELL') {
                      if (remaining > 0) {
                         statusMessage.textContent = `Select one of the ${remaining} remaining cell(s) to divide.`;
+                     } else {
+                        statusMessage.textContent = `Turn complete. Advancing...`;
                      }
                 } else if (divisionState === 'PLACING_DAUGHTER_1') {
                     statusMessage.textContent = 'Place the 1st daughter cell.';
@@ -299,15 +305,6 @@
                     statusMessage.textContent = 'Place the 2nd daughter cell.';
                 }
                 
-                if (remaining === 0 && (cellsToProcessThisTurn.size > 0 || time === 0)) {
-                    finishTurnBtn.disabled = false;
-                    finishTurnBtn.classList.remove('btn-disabled');
-                    statusMessage.textContent = 'All cells processed. Click "Finish Turn".';
-                } else {
-                    finishTurnBtn.disabled = true;
-                    finishTurnBtn.classList.add('btn-disabled');
-                }
-
                 if (turnHistory.length > 0) {
                     undoBtn.disabled = false;
                     undoBtn.classList.remove('btn-disabled');
@@ -433,7 +430,6 @@
 
             // --- Event Handlers ---
             canvas.addEventListener('click', handleCanvasClick);
-            finishTurnBtn.addEventListener('click', finishTurn);
             undoBtn.addEventListener('click', undoLastMove);
             resetBtn.addEventListener('click', init);
             
