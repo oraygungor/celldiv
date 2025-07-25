@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cell Division Game</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        canvas {
+            background-color: #1a202c; /* A dark slate background */
+            border-radius: 0.5rem;
+            cursor: pointer;
+            display: block; /* Ensures canvas behaves like a block element */
+            width: 100%;
+            height: 100%;
+        }
+        canvas:active {
+            cursor: grabbing;
+        }
+        .btn-disabled {
+            background-color: #4a5568;
+            cursor: not-allowed;
+            opacity: 0.7;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white flex flex-col items-center min-h-screen p-2 sm:p-4">
+
+    <div class="w-full max-w-5xl mx-auto flex flex-col gap-4">
+        <!-- Header and Info Panels -->
+        <div class="text-center">
+            <h1 class="text-2xl md:text-3xl font-bold text-cyan-400">Cell Division & Expansion</h1>
+            <p class="text-gray-400 mt-1">Manually divide cells to maximize the empty radius.</p>
+        </div>
+
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
+            <div class="bg-gray-800 p-3 rounded-lg">
+                <p class="text-sm text-gray-400">Time (T)</p>
+                <p id="time-display" class="text-2xl font-semibold">0</p>
+            </div>
+            <div class="bg-gray-800 p-3 rounded-lg">
+                <p class="text-sm text-gray-400">Cell Count</p>
+                <p id="cell-count-display" class="text-2xl font-semibold">1</p>
+            </div>
+            <div class="bg-gray-800 p-3 rounded-lg col-span-2">
+                <p class="text-sm text-gray-400">Max Empty Radius (R)</p>
+                <p id="radius-display" class="text-2xl font-semibold">0.00</p>
+            </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="flex flex-col items-center gap-3">
+            <div class="flex items-center justify-center gap-4 flex-wrap">
+                 <button id="undo-btn" class="bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-2 px-6 rounded-lg shadow-lg transition-transform transform hover:scale-105 btn-disabled" disabled>
+                    Back
+                </button>
+                <button id="finish-turn-btn" class="bg-cyan-500 hover:bg-cyan-600 text-white font-bold py-2 px-6 rounded-lg shadow-lg transition-transform transform hover:scale-105 btn-disabled" disabled>
+                    Finish Turn
+                </button>
+            </div>
+             <p id="status-message" class="text-center text-yellow-400 h-6"></p>
+        </div>
+
+        <!-- Canvas Container -->
+        <div class="w-full aspect-square bg-gray-800 rounded-lg shadow-inner">
+            <canvas id="game-canvas"></canvas>
+        </div>
+         <button id="reset-btn" class="w-full max-w-xs mx-auto bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-6 rounded-lg shadow-lg transition-transform transform hover:scale-105">
+            Reset
+        </button>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            // DOM Elements
+            const canvas = document.getElementById('game-canvas');
+            const ctx = canvas.getContext('2d');
+            const timeDisplay = document.getElementById('time-display');
+            const cellCountDisplay = document.getElementById('cell-count-display');
+            const radiusDisplay = document.getElementById('radius-display');
+            const statusMessage = document.getElementById('status-message');
+            const finishTurnBtn = document.getElementById('finish-turn-btn');
+            const undoBtn = document.getElementById('undo-btn');
+            const resetBtn = document.getElementById('reset-btn');
+
+            // Game State
+            let time, cells, occupied, scale, pan, isPanning, panStart;
+            let nextCellId, divisionState, selectedCell, daughterPositions, cellsToProcessThisTurn, processedCellsThisTurn, turnHistory;
+
+            // --- Initialization ---
+            function init() {
+                time = 0;
+                nextCellId = 1;
+                cells = [{ x: 0, y: 0, id: 0, generation: 0 }];
+                occupied = new Set(["0,0"]);
+                
+                pan = { x: 0, y: 0 };
+                isPanning = false;
+                panStart = { x: 0, y: 0 };
+                
+                turnHistory = [];
+
+                // Set initial scale and pan after a timeout to ensure canvas is sized
+                setTimeout(() => {
+                    const rect = canvas.parentElement.getBoundingClientRect();
+                    canvas.width = rect.width;
+                    canvas.height = rect.height;
+                    const gridSize = 25; // Changed from 15 to 25
+                    scale = canvas.width / gridSize;
+                    pan.x = canvas.width / 2;
+                    pan.y = canvas.height / 2;
+                    resetTurnState();
+                }, 0);
+            }
+            
+            function resetTurnState() {
+                divisionState = 'SELECTING_CELL';
+                selectedCell = null;
+                daughterPositions = [];
+                cellsToProcessThisTurn = new Set(cells.filter(c => c.generation === time).map(c => c.id));
+                processedCellsThisTurn = new Set();
+                turnHistory = [];
+                checkBlockedCells();
+                updateUI();
+                if (ctx) {
+                    draw();
+                }
+            }
+
+            // --- Game Logic ---
+            function handleCanvasClick(event) {
+                const rect = canvas.getBoundingClientRect();
+                const mouseX = event.clientX - rect.left;
+                const mouseY = event.clientY - rect.top;
+
+                const gridPos = screenToGrid(mouseX, mouseY);
+
+                if (divisionState === 'SELECTING_CELL') {
+                    const clickedCell = cells.find(c => c.x === gridPos.x && c.y === gridPos.y);
+                    if (clickedCell && cellsToProcessThisTurn.has(clickedCell.id) && !processedCellsThisTurn.has(clickedCell.id)) {
+                        const availableNeighbors = getAvailableNeighbors(clickedCell);
+                        if (availableNeighbors.length >= 2) {
+                            selectedCell = clickedCell;
+                            divisionState = 'PLACING_DAUGHTER_1';
+                        } else {
+                            statusMessage.textContent = "This cell is blocked (fewer than 2 empty neighbors).";
+                        }
+                    }
+                } else if (divisionState === 'PLACING_DAUGHTER_1') {
+                    if (isValidDaughterPlacement(gridPos, selectedCell, [])) {
+                        daughterPositions.push(gridPos);
+                        divisionState = 'PLACING_DAUGHTER_2';
+                    } else if (selectedCell && gridPos.x === selectedCell.x && gridPos.y === selectedCell.y) {
+                        divisionState = 'SELECTING_CELL';
+                        selectedCell = null;
+                    }
+                } else if (divisionState === 'PLACING_DAUGHTER_2') {
+                    if (isValidDaughterPlacement(gridPos, selectedCell, daughterPositions)) {
+                        daughterPositions.push(gridPos);
+                        commitDivision();
+                    } else if (selectedCell && gridPos.x === selectedCell.x && gridPos.y === selectedCell.y) {
+                        divisionState = 'SELECTING_CELL';
+                        selectedCell = null;
+                        daughterPositions = [];
+                    }
+                }
+                updateUI();
+                draw();
+            }
+            
+            function commitDivision() {
+                turnHistory.push({
+                    cells: JSON.parse(JSON.stringify(cells)),
+                    occupied: new Set(occupied),
+                    processedCellsThisTurn: new Set(processedCellsThisTurn),
+                    nextCellId: nextCellId
+                });
+
+                const parentKey = `${selectedCell.x},${selectedCell.y}`;
+                occupied.delete(parentKey);
+                cells = cells.filter(c => c.id !== selectedCell.id);
+                
+                for (const pos of daughterPositions) {
+                    const newCell = { x: pos.x, y: pos.y, id: nextCellId++, generation: time + 1 };
+                    cells.push(newCell);
+                    occupied.add(`${pos.x},${pos.y}`);
+                }
+                
+                processedCellsThisTurn.add(selectedCell.id);
+                
+                selectedCell = null;
+                daughterPositions = [];
+                divisionState = 'SELECTING_CELL';
+            }
+
+            function undoLastMove() {
+                if (turnHistory.length === 0) return;
+
+                const lastState = turnHistory.pop();
+                cells = lastState.cells;
+                occupied = lastState.occupied;
+                processedCellsThisTurn = lastState.processedCellsThisTurn;
+                nextCellId = lastState.nextCellId;
+
+                divisionState = 'SELECTING_CELL';
+                selectedCell = null;
+                daughterPositions = [];
+
+                updateUI();
+                draw();
+            }
+            
+            function finishTurn() {
+                const remaining = cellsToProcessThisTurn.size - processedCellsThisTurn.size;
+                if (remaining > 0) return;
+                time++;
+                resetTurnState();
+            }
+            
+            function checkBlockedCells() {
+                cells.filter(c => cellsToProcessThisTurn.has(c.id)).forEach(cell => {
+                    if (getAvailableNeighbors(cell).length < 2) {
+                        processedCellsThisTurn.add(cell.id);
+                    }
+                });
+            }
+
+            // --- Helpers ---
+            function getAvailableNeighbors(cell) {
+                const neighbors = [
+                    { x: cell.x, y: cell.y + 1 }, { x: cell.x, y: cell.y - 1 },
+                    { x: cell.x + 1, y: cell.y }, { x: cell.x - 1, y: cell.y }
+                ];
+                return neighbors.filter(n => !occupied.has(`${n.x},${n.y}`));
+            }
+
+            function isValidDaughterPlacement(gridPos, parent, placedDaughters) {
+                if (!parent) return false;
+                if (occupied.has(`${gridPos.x},${gridPos.y}`)) return false;
+                if (placedDaughters.some(d => d.x === gridPos.x && d.y === gridPos.y)) return false;
+                const dx = Math.abs(gridPos.x - parent.x);
+                const dy = Math.abs(gridPos.y - parent.y);
+                return dx + dy === 1;
+            }
+
+            function screenToGrid(screenX, screenY) {
+                const gridX = Math.round((screenX - pan.x) / scale);
+                const gridY = Math.round(-(screenY - pan.y) / scale);
+                return { x: gridX, y: gridY };
+            }
+
+            // --- Update UI ---
+            function updateUI() {
+                timeDisplay.textContent = time;
+                cellCountDisplay.textContent = cells.length;
+
+                if (cells.length > 0) {
+                    let minDistanceSq = Infinity;
+                    if (occupied.has("0,0")) {
+                        minDistanceSq = 0;
+                    } else {
+                         cells.forEach(cell => {
+                            minDistanceSq = Math.min(minDistanceSq, cell.x**2 + cell.y**2);
+                        });
+                    }
+                    radiusDisplay.textContent = Math.sqrt(minDistanceSq).toFixed(2);
+                } else {
+                    radiusDisplay.textContent = 'Infinity';
+                }
+                
+                const remaining = cellsToProcessThisTurn.size - processedCellsThisTurn.size;
+                if (divisionState === 'SELECTING_CELL') {
+                     if (remaining > 0) {
+                        statusMessage.textContent = `Select one of the ${remaining} remaining cell(s) to divide.`;
+                     }
+                } else if (divisionState === 'PLACING_DAUGHTER_1') {
+                    statusMessage.textContent = 'Place the 1st daughter cell. (Click parent to cancel)';
+                } else if (divisionState === 'PLACING_DAUGHTER_2') {
+                    statusMessage.textContent = 'Place the 2nd daughter cell. (Click parent to cancel)';
+                }
+                
+                if (remaining === 0 && (cellsToProcessThisTurn.size > 0 || time === 0)) {
+                    finishTurnBtn.disabled = false;
+                    finishTurnBtn.classList.remove('btn-disabled');
+                    statusMessage.textContent = 'All cells processed. Click "Finish Turn".';
+                } else {
+                    finishTurnBtn.disabled = true;
+                    finishTurnBtn.classList.add('btn-disabled');
+                }
+
+                if (turnHistory.length > 0) {
+                    undoBtn.disabled = false;
+                    undoBtn.classList.remove('btn-disabled');
+                } else {
+                    undoBtn.disabled = true;
+                    undoBtn.classList.add('btn-disabled');
+                }
+            }
+
+            // --- Drawing ---
+            function draw() {
+                const rect = canvas.parentElement.getBoundingClientRect();
+                if (canvas.width !== rect.width || canvas.height !== rect.height) {
+                    canvas.width = rect.width;
+                    canvas.height = rect.height;
+                }
+                
+                const centerX = pan.x;
+                const centerY = pan.y;
+
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.save();
+                ctx.translate(centerX, centerY);
+
+                drawGrid(centerX, centerY);
+
+                if (cells.length > 0 && !occupied.has("0,0")) {
+                    let minDistanceSq = Infinity;
+                    cells.forEach(cell => {
+                        minDistanceSq = Math.min(minDistanceSq, cell.x**2 + cell.y**2);
+                    });
+                    const radius = Math.sqrt(minDistanceSq);
+                    ctx.beginPath();
+                    ctx.arc(0, 0, radius * scale, 0, 2 * Math.PI);
+                    ctx.strokeStyle = 'rgba(255, 255, 0, 0.5)';
+                    ctx.fillStyle = 'rgba(255, 255, 0, 0.1)';
+                    ctx.lineWidth = 2;
+                    ctx.fill();
+                    ctx.stroke();
+                }
+                
+                if (selectedCell) {
+                    const available = getAvailableNeighbors(selectedCell);
+                    ctx.strokeStyle = 'rgba(45, 212, 191, 0.7)';
+                    ctx.lineWidth = 2;
+                    available.forEach(n => {
+                        const isPlaced = daughterPositions.some(d => d.x === n.x && d.y === n.y);
+                        if (!isPlaced) {
+                           ctx.strokeRect(n.x * scale - scale/2, -n.y * scale - scale/2, scale, scale);
+                        }
+                    });
+                }
+
+                cells.forEach(cell => {
+                    ctx.beginPath();
+                    const isCurrentGen = cell.generation === time;
+                    const isProcessed = processedCellsThisTurn.has(cell.id);
+                    
+                    if (selectedCell && cell.id === selectedCell.id) {
+                        ctx.fillStyle = '#facc15'; // Yellow (Selected)
+                    } else if (isCurrentGen && !isProcessed) {
+                        ctx.fillStyle = '#22d3ee'; // Bright Cyan (Ready to divide)
+                    } else if (isCurrentGen && isProcessed) {
+                        ctx.fillStyle = '#4b5563'; // Gray (Processed/Blocked)
+                    } else {
+                        ctx.fillStyle = '#0891b2'; // Dimmer Cyan (New generation)
+                    }
+
+                    ctx.arc(cell.x * scale, -cell.y * scale, scale / 2.5, 0, 2 * Math.PI);
+                    ctx.fill();
+                });
+                
+                ctx.fillStyle = '#0891b2';
+                daughterPositions.forEach(pos => {
+                     ctx.beginPath();
+                     ctx.arc(pos.x * scale, -pos.y * scale, scale / 2.5, 0, 2 * Math.PI);
+                     ctx.fill();
+                });
+
+                ctx.restore();
+            }
+            
+            function drawGrid(centerX, centerY) {
+                ctx.save();
+                ctx.lineWidth = 1;
+                
+                ctx.strokeStyle = "#374151"; // Tailwind gray-700
+                
+                const startX = -centerX % scale;
+                for (let x = startX; x < canvas.width; x += scale) {
+                    ctx.beginPath();
+                    ctx.moveTo(x - centerX, -centerY);
+                    ctx.lineTo(x - centerX, canvas.height - centerY);
+                    ctx.stroke();
+                }
+
+                const startY = -centerY % scale;
+                for (let y = startY; y < canvas.height; y += scale) {
+                    ctx.beginPath();
+                    ctx.moveTo(-centerX, y - centerY);
+                    ctx.lineTo(canvas.width - centerX, y - centerY);
+                    ctx.stroke();
+                }
+
+                ctx.lineWidth = 2;
+                ctx.strokeStyle = "#6b7280"; // Tailwind gray-500
+                
+                ctx.beginPath();
+                ctx.moveTo(0, -centerY);
+                ctx.lineTo(0, canvas.height - centerY);
+                ctx.stroke();
+
+                ctx.beginPath();
+                ctx.moveTo(-centerX, 0);
+                ctx.lineTo(canvas.width - centerX, 0);
+                ctx.stroke();
+                
+                ctx.restore();
+            }
+
+            // --- Event Handlers ---
+            canvas.addEventListener('click', handleCanvasClick);
+            finishTurnBtn.addEventListener('click', finishTurn);
+            undoBtn.addEventListener('click', undoLastMove);
+            resetBtn.addEventListener('click', init);
+            
+            window.addEventListener('resize', () => {
+                if(canvas) {
+                    const rect = canvas.parentElement.getBoundingClientRect();
+                    canvas.width = rect.width;
+                    canvas.height = rect.height;
+                    const gridSize = 25; // Changed from 15 to 25
+                    scale = canvas.width / gridSize;
+                    pan.x = canvas.width / 2;
+                    pan.y = canvas.height / 2;
+                    requestAnimationFrame(draw);
+                }
+            });
+
+            // Initial call
+            init();
+        });
+    </script>
+</body>
+</html>
