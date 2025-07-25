@@ -106,12 +106,11 @@
                 
                 turnHistory = [];
 
-                // Set initial scale and pan after a timeout to ensure canvas is sized
                 setTimeout(() => {
                     const rect = canvas.parentElement.getBoundingClientRect();
                     canvas.width = rect.width;
                     canvas.height = rect.height;
-                    const gridSize = 25; // Changed from 15 to 25
+                    const gridSize = 25;
                     scale = canvas.width / gridSize;
                     pan.x = canvas.width / 2;
                     pan.y = canvas.height / 2;
@@ -144,29 +143,30 @@
                 if (divisionState === 'SELECTING_CELL') {
                     const clickedCell = cells.find(c => c.x === gridPos.x && c.y === gridPos.y);
                     if (clickedCell && cellsToProcessThisTurn.has(clickedCell.id) && !processedCellsThisTurn.has(clickedCell.id)) {
-                        const availableNeighbors = getAvailableNeighbors(clickedCell);
-                        if (availableNeighbors.length >= 2) {
+                        // A cell needs at least one empty neighbor to divide.
+                        if (getAvailableNeighbors(clickedCell).length >= 1) {
                             selectedCell = clickedCell;
                             divisionState = 'PLACING_DAUGHTER_1';
                         } else {
-                            statusMessage.textContent = "This cell is blocked (fewer than 2 empty neighbors).";
+                            statusMessage.textContent = "This cell is blocked (no empty neighbors).";
                         }
                     }
                 } else if (divisionState === 'PLACING_DAUGHTER_1') {
-                    if (isValidDaughterPlacement(gridPos, selectedCell, [])) {
+                    const validSpots = getValidPlacementSpots(selectedCell);
+                    if (isValidPlacement(gridPos, validSpots)) {
                         daughterPositions.push(gridPos);
                         divisionState = 'PLACING_DAUGHTER_2';
-                    } else if (selectedCell && gridPos.x === selectedCell.x && gridPos.y === selectedCell.y) {
+                    } else if (isSamePos(gridPos, selectedCell)) {
                         divisionState = 'SELECTING_CELL';
                         selectedCell = null;
                     }
                 } else if (divisionState === 'PLACING_DAUGHTER_2') {
-                    if (isValidDaughterPlacement(gridPos, selectedCell, daughterPositions)) {
+                    const validSpots = getValidPlacementSpots(selectedCell).filter(p => !isSamePos(p, daughterPositions[0]));
+                    if (isValidPlacement(gridPos, validSpots)) {
                         daughterPositions.push(gridPos);
                         commitDivision();
-                    } else if (selectedCell && gridPos.x === selectedCell.x && gridPos.y === selectedCell.y) {
-                        divisionState = 'SELECTING_CELL';
-                        selectedCell = null;
+                    } else if (isSamePos(gridPos, selectedCell)) {
+                        divisionState = 'PLACING_DAUGHTER_1';
                         daughterPositions = [];
                     }
                 }
@@ -182,17 +182,24 @@
                     nextCellId: nextCellId
                 });
 
-                const parentKey = `${selectedCell.x},${selectedCell.y}`;
-                occupied.delete(parentKey);
-                cells = cells.filter(c => c.id !== selectedCell.id);
+                const parentCell = selectedCell;
+                const daughter1Pos = daughterPositions[0];
+                const daughter2Pos = daughterPositions[1];
+
+                // Remove parent from list and its spot from occupied set
+                cells = cells.filter(c => c.id !== parentCell.id);
+                occupied.delete(`${parentCell.x},${parentCell.y}`);
                 
-                for (const pos of daughterPositions) {
-                    const newCell = { x: pos.x, y: pos.y, id: nextCellId++, generation: time + 1 };
-                    cells.push(newCell);
-                    occupied.add(`${pos.x},${pos.y}`);
-                }
+                // Add daughters to list and their spots to occupied set
+                const daughter1 = { x: daughter1Pos.x, y: daughter1Pos.y, id: nextCellId++, generation: time + 1 };
+                cells.push(daughter1);
+                occupied.add(`${daughter1.x},${daughter1.y}`);
                 
-                processedCellsThisTurn.add(selectedCell.id);
+                const daughter2 = { x: daughter2Pos.x, y: daughter2Pos.y, id: nextCellId++, generation: time + 1 };
+                cells.push(daughter2);
+                occupied.add(`${daughter2.x},${daughter2.y}`);
+                
+                processedCellsThisTurn.add(parentCell.id);
                 
                 selectedCell = null;
                 daughterPositions = [];
@@ -225,7 +232,8 @@
             
             function checkBlockedCells() {
                 cells.filter(c => cellsToProcessThisTurn.has(c.id)).forEach(cell => {
-                    if (getAvailableNeighbors(cell).length < 2) {
+                    // Blocked if no empty neighbors.
+                    if (getAvailableNeighbors(cell).length < 1) {
                         processedCellsThisTurn.add(cell.id);
                     }
                 });
@@ -239,14 +247,20 @@
                 ];
                 return neighbors.filter(n => !occupied.has(`${n.x},${n.y}`));
             }
+            
+            function getValidPlacementSpots(cell) {
+                if (!cell) return [];
+                const emptyNeighbors = getAvailableNeighbors(cell);
+                // Valid spots are empty neighbors PLUS the parent's own spot.
+                return [...emptyNeighbors, { x: cell.x, y: cell.y }];
+            }
 
-            function isValidDaughterPlacement(gridPos, parent, placedDaughters) {
-                if (!parent) return false;
-                if (occupied.has(`${gridPos.x},${gridPos.y}`)) return false;
-                if (placedDaughters.some(d => d.x === gridPos.x && d.y === gridPos.y)) return false;
-                const dx = Math.abs(gridPos.x - parent.x);
-                const dy = Math.abs(gridPos.y - parent.y);
-                return dx + dy === 1;
+            function isValidPlacement(gridPos, validSpots) {
+                return validSpots.some(spot => isSamePos(spot, gridPos));
+            }
+
+            function isSamePos(pos1, pos2) {
+                return pos1.x === pos2.x && pos1.y === pos2.y;
             }
 
             function screenToGrid(screenX, screenY) {
@@ -280,9 +294,9 @@
                         statusMessage.textContent = `Select one of the ${remaining} remaining cell(s) to divide.`;
                      }
                 } else if (divisionState === 'PLACING_DAUGHTER_1') {
-                    statusMessage.textContent = 'Place the 1st daughter cell. (Click parent to cancel)';
+                    statusMessage.textContent = 'Place the 1st daughter cell.';
                 } else if (divisionState === 'PLACING_DAUGHTER_2') {
-                    statusMessage.textContent = 'Place the 2nd daughter cell. (Click parent to cancel)';
+                    statusMessage.textContent = 'Place the 2nd daughter cell.';
                 }
                 
                 if (remaining === 0 && (cellsToProcessThisTurn.size > 0 || time === 0)) {
@@ -336,14 +350,17 @@
                 }
                 
                 if (selectedCell) {
-                    const available = getAvailableNeighbors(selectedCell);
+                    let validSpots = [];
+                    if (divisionState === 'PLACING_DAUGHTER_1') {
+                        validSpots = getValidPlacementSpots(selectedCell);
+                    } else if (divisionState === 'PLACING_DAUGHTER_2') {
+                        validSpots = getValidPlacementSpots(selectedCell).filter(p => !isSamePos(p, daughterPositions[0]));
+                    }
+                    
                     ctx.strokeStyle = 'rgba(45, 212, 191, 0.7)';
                     ctx.lineWidth = 2;
-                    available.forEach(n => {
-                        const isPlaced = daughterPositions.some(d => d.x === n.x && d.y === n.y);
-                        if (!isPlaced) {
-                           ctx.strokeRect(n.x * scale - scale/2, -n.y * scale - scale/2, scale, scale);
-                        }
+                    validSpots.forEach(n => {
+                       ctx.strokeRect(n.x * scale - scale/2, -n.y * scale - scale/2, scale, scale);
                     });
                 }
 
@@ -425,7 +442,7 @@
                     const rect = canvas.parentElement.getBoundingClientRect();
                     canvas.width = rect.width;
                     canvas.height = rect.height;
-                    const gridSize = 25; // Changed from 15 to 25
+                    const gridSize = 25;
                     scale = canvas.width / gridSize;
                     pan.x = canvas.width / 2;
                     pan.y = canvas.height / 2;
